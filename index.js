@@ -1,73 +1,91 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const fs = require('fs');
+const path = require('path');
 
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    }
-});
+let sock;
 
-// Event: QR Code Generated
-client.on('qr', (qr) => {
-    console.log('\n📱 Scan QR Code dengan WhatsApp Anda:');
-    qrcode.generate(qr, { small: true });
-    console.log('\n⏳ Menunggu konfirmasi...\n');
-});
+async function connectWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
-// Event: Authentication Success
-client.on('authenticated', () => {
-    console.log('✅ Autentikasi berhasil!');
-});
+    sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: false,
+    });
 
-// Event: Ready
-client.on('ready', () => {
-    console.log('🤖 Bot WhatsApp siap digunakan!');
-});
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
 
-// Event: Receive Message
-client.on('message', async (message) => {
-    console.log(`[${message.from}] ${message.body}`);
+        // Tampilkan QR Code jika ada
+        if (qr) {
+            console.log('❌ QR Code sudah tidak digunakan. Gunakan pairing code di bawah:\n');
+        }
 
-    // Fitur: Balasan otomatis
-    if (message.body === 'halo') {
-        await client.sendMessage(message.from, 'Halo! Ada yang bisa saya bantu? 😊');
-    }
+        // Tampilkan Pairing Code
+        if (update.qr === undefined && connection === 'open' && !sock.user) {
+            console.log('📱 Menunggu pairing code...');
+        }
 
-    // Fitur: Perintah !info
-    if (message.body === '!info') {
-        await client.sendMessage(message.from, 'Bot WhatsApp v1.0\nDiperintahkan oleh Anda 🤖');
-    }
+        if (connection === 'connecting') {
+            console.log('🔗 Menghubungkan ke WhatsApp...');
+        }
 
-    // Fitur: Perintah !help
-    if (message.body === '!help') {
-        const helpText = `📋 Daftar Perintah:\n
+        if (connection === 'open') {
+            console.log('✅ Bot WhatsApp berhasil terhubung!');
+            console.log(`👤 Nomor: ${sock.user.id}`);
+        }
+
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('❌ Koneksi terputus:', lastDisconnect?.error);
+
+            if (shouldReconnect) {
+                connectWhatsApp();
+            }
+        }
+    });
+
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('messages.upsert', async (m) => {
+        if (!m.messages) return;
+
+        const msg = m.messages[0];
+        if (!msg.message) return;
+
+        const sender = msg.key.remoteJid;
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+
+        console.log(`[${sender}] ${text}`);
+
+        // Fitur: Balasan otomatis
+        if (text.toLowerCase() === 'halo') {
+            await sock.sendMessage(sender, { text: 'Halo! Ada yang bisa saya bantu? 😊' });
+        }
+
+        // Fitur: Perintah !info
+        if (text === '!info') {
+            await sock.sendMessage(sender, { text: 'Bot WhatsApp Baileys v1.0\nDiperintahkan oleh Anda 🤖' });
+        }
+
+        // Fitur: Perintah !help
+        if (text === '!help') {
+            const helpText = `📋 Daftar Perintah:\n
 1. halo - Balasan otomatis
 2. !info - Informasi bot
 3. !help - Tampilkan bantuan
 4. !echo [teks] - Ulangi pesan Anda`;
-        await client.sendMessage(message.from, helpText);
-    }
+            await sock.sendMessage(sender, { text: helpText });
+        }
 
-    // Fitur: Perintah !echo
-    if (message.body.startsWith('!echo ')) {
-        const echoText = message.body.slice(6);
-        await client.sendMessage(message.from, `Echo: ${echoText}`);
-    }
-});
+        // Fitur: Perintah !echo
+        if (text.startsWith('!echo ')) {
+            const echoText = text.slice(6);
+            await sock.sendMessage(sender, { text: `Echo: ${echoText}` });
+        }
+    });
+}
 
-// Event: Disconnect
-client.on('disconnected', (reason) => {
-    console.log('❌ Bot terputus:', reason);
-});
+connectWhatsApp().catch(console.error);
 
-// Event: Error
-client.on('error', (error) => {
-    console.error('❌ Error:', error);
-});
-
-// Inisialisasi client
-client.initialize();
-
-console.log('🚀 Memulai bot WhatsApp...');
+console.log('🚀 Bot WhatsApp dengan Pairing Code dimulai...');
+console.log('⏳ Silakan tunggu dan ikuti instruksi pairing code yang muncul...\n');
